@@ -137,6 +137,8 @@ class MinerUParser(RAGFlowPdfParser):
         self.logger.info("[MinerU] Command completed successfully.")
 
     def __images__(self, fnm, zoomin: int = 1, page_from=0, page_to=600, callback=None):
+        # Persist the page offset so downstream consumers can convert between
+        # local slice indices (used during cropping) and absolute page numbers.
         self.page_from = page_from
         self.page_to = page_to
         try:
@@ -169,39 +171,74 @@ class MinerUParser(RAGFlowPdfParser):
             if need_position:
                 return None, None
             return
+        # When running on a sliced PDF we only store the pages inside the slice.
+        # If page images are missing (e.g. pdfplumber failed) there is nothing to crop.
+        if not getattr(self, "page_images", None):
+            if need_position:
+                return None, None
+            return
 
         max_width = max(np.max([right - left for (_, left, right, _, _) in poss]), 6)
         GAP = 6
+
+        def _local_index(page_idx: int) -> Optional[int]:
+            local_idx = page_idx - getattr(self, "page_from", 0)
+            if local_idx < 0 or local_idx >= len(self.page_images):
+                return None
+            return local_idx
+        # The first and last positions correspond to the current block boundary
+        # and we need to synthesise extra padding around them. Convert them to
+        # local indices to avoid addressing outside the sliced page cache.
+
         pos = poss[0]
         poss.insert(0, ([pos[0][0]], pos[1], pos[2], max(0, pos[3] - 120), max(pos[3] - GAP, 0)))
         pos = poss[-1]
-        poss.append(([pos[0][-1]], pos[1], pos[2], min(self.page_images[pos[0][-1]].size[1], pos[4] + GAP), min(self.page_images[pos[0][-1]].size[1], pos[4] + 120)))
+        end_local_idx = _local_index(pos[0][-1])
+        if end_local_idx is None:
+            if need_position:
+                return None, None
+            return
+        end_page_height = self.page_images[end_local_idx].size[1]
+        poss.append(([pos[0][-1]], pos[1], pos[2], min(end_page_height, pos[4] + GAP), min(end_page_height, pos[4] + 120)))
 
         positions = []
         for ii, (pns, left, right, top, bottom) in enumerate(poss):
+            local_indices = []
+            skip_entry = False
+            for pn_abs in pns:
+                local_idx = _local_index(pn_abs)
+                if local_idx is None:
+                    skip_entry = True
+                    break
+                local_indices.append(local_idx)
+            if skip_entry:
+                # Some spans still point to pages outside the current slice; skip
+                # gracefully instead of raising an IndexError.
+                continue
+
             right = left + max_width
 
             if bottom <= top:
                 bottom = top + 2
 
-            for pn in pns[1:]:
-                bottom += self.page_images[pn - 1].size[1]
+            for pn_local in local_indices[1:]:
+                bottom += self.page_images[pn_local - 1].size[1]
 
-            img0 = self.page_images[pns[0]]
+            img0 = self.page_images[local_indices[0]]
             x0, y0, x1, y1 = int(left), int(top), int(right), int(min(bottom, img0.size[1]))
             crop0 = img0.crop((x0, y0, x1, y1))
             imgs.append(crop0)
             if 0 < ii < len(poss) - 1:
-                positions.append((pns[0] + self.page_from, x0, x1, y0, y1))
+                positions.append((pns[0], x0, x1, y0, y1))
 
             bottom -= img0.size[1]
-            for pn in pns[1:]:
-                page = self.page_images[pn]
+            for pn_abs, pn_local in zip(pns[1:], local_indices[1:]):
+                page = self.page_images[pn_local]
                 x0, y0, x1, y1 = int(left), 0, int(right), int(min(bottom, page.size[1]))
                 cimgp = page.crop((x0, y0, x1, y1))
                 imgs.append(cimgp)
                 if 0 < ii < len(poss) - 1:
-                    positions.append((pn + self.page_from, x0, x1, y0, y1))
+                    positions.append((pn_abs, x0, x1, y0, y1))
                 bottom -= page.size[1]
 
         if not imgs:
@@ -354,6 +391,7 @@ class MinerUParser(RAGFlowPdfParser):
             subset_dir = Path(tempfile.mkdtemp(prefix="mineru_slice_"))
             subset_pdf = subset_dir / f"{Path(filepath).stem}_p{start_idx + 1}_{end_idx}.pdf"
             writer = PdfWriter()
+            # Persist only the requested pages into a temporary PDF so MinerU processes this slice.
             for page_idx in range(start_idx, end_idx):
                 writer.add_page(reader.pages[page_idx])
             with open(subset_pdf, "wb") as fp:

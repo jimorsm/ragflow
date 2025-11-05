@@ -12,7 +12,7 @@ data:
   MINERU_VERSION: "{{ .Values.ragflow.mineru.version }}"
   MINERU_OUTPUT_DIR: "{{ .Values.ragflow.mineru.outputDir }}"
   MINERU_BACKEND: "{{ .Values.ragflow.mineru.backend }}"
-  MINERU_DELETE_OUTPUT: "{{ .Values.ragflow.mineru.deleteOutput | toString }}"
+  MINERU_DELETE_OUTPUT: {{ ternary 1 0 .Values.ragflow.mineru.deleteOutput | quote }}
   HF_ENDPOINT: "{{ .Values.ragflow.mineru.huggingface.endpoint }}"
   PIP_INDEX_URL: "{{ .Values.ragflow.mineru.pypi.indexUrl }}"
   PIP_EXTRA_INDEX_URL: "{{ .Values.ragflow.mineru.pypi.extraIndexUrl }}"

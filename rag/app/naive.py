@@ -523,6 +523,8 @@ def chunk(filename, binary=None, from_page=0, to_page=100000,
                 callback(-1, "MinerU not found.")
                 return res
 
+            # MinerU slices the PDF according to from_page/to_page, runs the CLI on
+            # the subset, and then re-applies the offset so downstream consumers see absolute page numbers.
             sections, tables = pdf_parser.parse_pdf(
                 filepath=filename,
                 binary=binary,

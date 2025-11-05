@@ -1,0 +1,4 @@
+FROM prod-harbor-tl.gtjaqh.io/aicp/ragflow:v0.21.1
+COPY api/db/services/task_service.py api/db/services/task_service.py
+COPY deepdoc/parser/mineru_parser.py deepdoc/parser/mineru_parser.py
+COPY rag/app/naive.py rag/app/naive.py

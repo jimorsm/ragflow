@@ -68,40 +68,76 @@ spec:
                 export HUGGINGFACE_HUB_ENDPOINT="${HF_ENDPOINT:-https://hf-mirror.com}"
                 export PIP_INDEX_URL="${PIP_INDEX_URL:-https://pypi.org/simple}"
                 export PIP_EXTRA_INDEX_URL="${PIP_EXTRA_INDEX_URL:-https://pypi.org/simple}"
-          
+
                 default_prefix="/ragflow/uv_tools"
                 venv_dir="${default_prefix}/.venv"
                 exe="${MINERU_EXECUTABLE:-${venv_dir}/bin/mineru}"
-          
-                if [[ ! -x "${exe}" ]]; then
+                expected_version="${MINERU_VERSION:-}"
+                install_needed=0
+                install_reason=""
+
+                if [[ -x "${exe}" ]]; then
+                  current_version="$("${exe}" --version 2>/dev/null | grep -Eo '[0-9]+\.[0-9.]*' | head -n1 || true)"
+                  if [[ -n "${expected_version}" ]]; then
+                    if [[ "${current_version}" != "${expected_version}" ]]; then
+                      echo "[mineru] version mismatch: current=${current_version:-unknown}, expected=${expected_version}"
+                      install_needed=1
+                      install_reason="version_mismatch"
+                    else
+                      echo "[mineru] already installed: ${exe} (version ${current_version})"
+                    fi
+                  else
+                    if [[ -n "${current_version}" ]]; then
+                      echo "[mineru] already installed: ${exe} (version ${current_version})"
+                    else
+                      echo "[mineru] unable to determine current version, reinstalling..."
+                      install_needed=1
+                      install_reason="unknown_version"
+                    fi
+                  fi
+                else
+                  install_needed=1
+                  install_reason="missing_executable"
+                fi
+
+                if [[ "${install_needed}" -eq 1 ]]; then
                   echo "[mineru] installing with mirrors..."
                   echo "[mineru] PyPI index: ${PIP_INDEX_URL}"
                   echo "[mineru] PyPI extra index: ${PIP_EXTRA_INDEX_URL}"
                   echo "[mineru] HF endpoint: ${HUGGINGFACE_HUB_ENDPOINT}"
-          
+
                   mkdir -p "${default_prefix}"
                   cd "${default_prefix}"
-                  uv venv "${venv_dir}"
+                  if [[ "${install_reason}" == "version_mismatch" && -d "${venv_dir}" ]]; then
+                    rm -rf "${venv_dir}"
+                  fi
+                  if [[ ! -d "${venv_dir}" ]]; then
+                    uv venv "${venv_dir}"
+                  fi
                   source "${venv_dir}/bin/activate"
                   pkg="mineru[core]"
-                  {{- with .Values.ragflow.mineru.version }}
-                  pkg="${pkg}=={{ . }}"
-                  {{- end }}
+                  if [[ -n "${expected_version}" ]]; then
+                    pkg="${pkg}==${expected_version}"
+                  fi
                   uv pip install -U "${pkg}" \
                     --index-url "${PIP_INDEX_URL}" \
                     --extra-index-url "${PIP_EXTRA_INDEX_URL}"
                   deactivate
-          
+
                   if ! "${exe}" --help >/dev/null 2>&1; then
                     echo "[mineru] installation failed" >&2
                     exit 1
                   fi
-                  echo "[mineru] installed successfully: ${exe}"
-                else
-                  echo "[mineru] already installed: ${exe}"
+                  if [[ -n "${expected_version}" ]]; then
+                    echo "[mineru] installed successfully: ${exe} (version ${expected_version})"
+                  else
+                    echo "[mineru] installed successfully: ${exe}"
+                  fi
                 fi
                 export MINERU_EXECUTABLE="${exe}"
               fi
+
+              cd /ragflow
 
               # Application startup logic
               export LD_LIBRARY_PATH="/usr/lib/x86_64-linux-gnu/"

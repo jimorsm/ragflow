@@ -64,10 +64,14 @@ ragflow:
       venv:
         enabled: true
         size: 5Gi
+        accessModes:
+          - ReadWriteOnce
         storageClass: ""
       cache:
         enabled: false
         size: 10Gi
+        accessModes:
+          - ReadWriteOnce
         storageClass: ""
   frontend:
     replicaCount: 2

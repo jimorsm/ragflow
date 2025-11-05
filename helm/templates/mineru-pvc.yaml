@@ -9,7 +9,9 @@ metadata:
     {{- include "ragflow.labels" . | nindent 4 }}
 spec:
   accessModes:
-    - ReadWriteOnce
+  {{- range $mode := (default (list "ReadWriteOnce") .Values.ragflow.mineru.persistence.venv.accessModes) }}
+    - {{ $mode }}
+  {{- end }}
   resources:
     requests:
       storage: {{ .Values.ragflow.mineru.persistence.venv.size }}
@@ -28,7 +30,9 @@ metadata:
     {{- include "ragflow.labels" . | nindent 4 }}
 spec:
   accessModes:
-    - ReadWriteOnce
+  {{- range $mode := (default (list "ReadWriteOnce") .Values.ragflow.mineru.persistence.cache.accessModes) }}
+    - {{ $mode }}
+  {{- end }}
   resources:
     requests:
       storage: {{ .Values.ragflow.mineru.persistence.cache.size }}
