@@ -365,7 +365,16 @@ def queue_tasks(doc: dict, bucket: str, name: str, priority: int):
         page_size = doc["parser_config"].get("task_page_size") or 12
         if doc["parser_id"] == "paper":
             page_size = doc["parser_config"].get("task_page_size") or 22
-        if doc["parser_id"] in ["one", "knowledge_graph"] or do_layout != "DeepDOC" or doc["parser_config"].get("toc", True):
+        layout_key = (
+            "deepdoc" if isinstance(do_layout, bool) and do_layout else
+            "plain text" if isinstance(do_layout, bool) else
+            str(do_layout).strip().lower()
+        )
+        if doc["parser_id"] in ["one", "knowledge_graph"]:
+            page_size = 10 ** 9
+        elif layout_key not in {"deepdoc", "mineru"}:
+            page_size = 10 ** 9
+        elif layout_key != "mineru" and doc["parser_config"].get("toc", True):
             page_size = 10 ** 9
         page_ranges = doc["parser_config"].get("pages") or [(1, 10 ** 5)]
         for s, e in page_ranges:

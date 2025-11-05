@@ -33,6 +33,11 @@ import pdfplumber
 from PIL import Image
 from strenum import StrEnum
 
+try:
+    from pypdf import PdfReader, PdfWriter
+except ImportError:  # pragma: no cover - fallback for environments with PyPDF2 only
+    from PyPDF2 import PdfReader, PdfWriter  # type: ignore
+
 from deepdoc.parser.pdf_parser import RAGFlowPdfParser
 
 LOCK_KEY_pdfplumber = "global_shared_lock_pdfplumber"
@@ -80,8 +85,10 @@ class MinerUParser(RAGFlowPdfParser):
             logging.error(f"[MinerU] Unexpected error during installation check: {e}")
         return False
 
-    def _run_mineru(self, input_path: Path, output_dir: Path, method: str = "auto", lang: Optional[str] = None):
+    def _run_mineru(self, input_path: Path, output_dir: Path, method: str = "auto", lang: Optional[str] = None, *, backend: str = "pipeline"):
         cmd = [str(self.mineru_path), "-p", str(input_path), "-o", str(output_dir), "-m", method]
+        if backend:
+            cmd.extend(["-b", backend])
         if lang:
             cmd.extend(["-l", lang])
 
@@ -231,7 +238,7 @@ class MinerUParser(RAGFlowPdfParser):
             poss.append(([int(p) - 1 for p in pn.split("-")], left, right, top, bottom))
         return poss
 
-    def _read_output(self, output_dir: Path, file_stem: str, method: str = "auto") -> list[dict[str, Any]]:
+    def _read_output(self, output_dir: Path, file_stem: str, method: str = "auto", page_offset: int = 0) -> list[dict[str, Any]]:
         subdir = output_dir / file_stem / method
         json_file = subdir / f"{file_stem}_content_list.json"
 
@@ -242,6 +249,15 @@ class MinerUParser(RAGFlowPdfParser):
             data = json.load(f)
 
         for item in data:
+            if page_offset:
+                if "page_idx" in item and isinstance(item["page_idx"], (int, float)):
+                    item["page_idx"] += page_offset
+                if "page_index" in item and isinstance(item["page_index"], (int, float)):
+                    item["page_index"] += page_offset
+                if "page_id" in item and isinstance(item["page_id"], (int, float)):
+                    item["page_id"] += page_offset
+                if "page_range" in item and isinstance(item["page_range"], list):
+                    item["page_range"] = [p + page_offset for p in item["page_range"]]
             for key in ("img_path", "table_img_path", "equation_img_path"):
                 if key in item and item[key]:
                     item[key] = str((subdir / item[key]).resolve())
@@ -274,14 +290,20 @@ class MinerUParser(RAGFlowPdfParser):
         callback: Optional[Callable] = None,
         *,
         output_dir: Optional[str] = None,
+        backend: str = "pipeline",
         lang: Optional[str] = None,
         method: str = "auto",
         delete_output: bool = True,
+        from_page: int = 0,
+        to_page: int = 100000,
     ) -> tuple:
         import shutil
 
         temp_pdf = None
         created_tmp_dir = False
+        subset_pdf = None
+        subset_dir = None
+        page_offset = max(0, int(from_page or 0))
 
         if binary:
             temp_dir = Path(tempfile.mkdtemp(prefix="mineru_bin_pdf_"))
@@ -310,11 +332,43 @@ class MinerUParser(RAGFlowPdfParser):
         if callback:
             callback(0.15, f"[MinerU] Output directory: {out_dir}")
 
-        self.__images__(pdf, zoomin=1)
+        pdf_for_mineru = pdf
+        total_pages = None
+        try:
+            reader = PdfReader(str(pdf))
+            total_pages = len(reader.pages)
+        except Exception:
+            reader = None
+
+        if total_pages is not None:
+            start_idx = min(page_offset, total_pages)
+            end_idx = min(int(to_page or total_pages), total_pages)
+        else:
+            start_idx = page_offset
+            end_idx = int(to_page or 0)
+
+        if total_pages is not None and end_idx <= start_idx:
+            raise ValueError(f"[MinerU] Invalid page range: {start_idx}-{end_idx}")
+
+        if reader is not None and (start_idx > 0 or (to_page and end_idx < total_pages)):
+            subset_dir = Path(tempfile.mkdtemp(prefix="mineru_slice_"))
+            subset_pdf = subset_dir / f"{Path(filepath).stem}_p{start_idx + 1}_{end_idx}.pdf"
+            writer = PdfWriter()
+            for page_idx in range(start_idx, end_idx):
+                writer.add_page(reader.pages[page_idx])
+            with open(subset_pdf, "wb") as fp:
+                writer.write(fp)
+            pdf_for_mineru = subset_pdf
+            page_offset = start_idx
+        elif reader is None and (page_offset or (to_page and to_page not in (0, 100000))):
+            page_offset = 0
+
+        self.__images__(pdf_for_mineru, zoomin=1)
+        self.page_from = page_offset
 
         try:
-            self._run_mineru(pdf, out_dir, method=method, lang=lang)
-            outputs = self._read_output(out_dir, pdf.stem, method=method)
+            self._run_mineru(pdf_for_mineru, out_dir, method=method, lang=lang, backend=backend)
+            outputs = self._read_output(out_dir, pdf_for_mineru.stem, method=method, page_offset=page_offset)
             self.logger.info(f"[MinerU] Parsed {len(outputs)} blocks from PDF.")
             if callback:
                 callback(0.75, f"[MinerU] Parsed {len(outputs)} blocks from PDF.")
@@ -324,6 +378,16 @@ class MinerUParser(RAGFlowPdfParser):
                 try:
                     temp_pdf.unlink()
                     temp_pdf.parent.rmdir()
+                except Exception:
+                    pass
+            if subset_pdf and subset_pdf.exists():
+                try:
+                    subset_pdf.unlink()
+                except Exception:
+                    pass
+            if subset_dir and subset_dir.exists():
+                try:
+                    subset_dir.rmdir()
                 except Exception:
                     pass
             if delete_output and created_tmp_dir and out_dir.exists():
