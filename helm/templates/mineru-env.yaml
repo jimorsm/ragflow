@@ -1,0 +1,19 @@
+{{- if .Values.ragflow.mineru.enabled }}
+---
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: {{ include "ragflow.fullname" . }}-mineru-env
+  labels:
+    {{- include "ragflow.labels" . | nindent 4 }}
+data:
+  USE_MINERU: "true"
+  MINERU_EXECUTABLE: "{{ .Values.ragflow.mineru.executable }}"
+  MINERU_VERSION: "{{ .Values.ragflow.mineru.version }}"
+  MINERU_OUTPUT_DIR: "{{ .Values.ragflow.mineru.outputDir }}"
+  MINERU_BACKEND: "{{ .Values.ragflow.mineru.backend }}"
+  MINERU_DELETE_OUTPUT: "{{ .Values.ragflow.mineru.deleteOutput | toString }}"
+  HF_ENDPOINT: "{{ .Values.ragflow.mineru.huggingface.endpoint }}"
+  PIP_INDEX_URL: "{{ .Values.ragflow.mineru.pypi.indexUrl }}"
+  PIP_EXTRA_INDEX_URL: "{{ .Values.ragflow.mineru.pypi.extraIndexUrl }}"
+{{- end }}

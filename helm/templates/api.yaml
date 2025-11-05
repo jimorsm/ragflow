@@ -1,0 +1,232 @@
+{{- $component := "api" }}
+{{- $name := include "ragflow.componentFullname" (dict "root" . "component" $component) }}
+---
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: {{ $name }}
+  labels:
+    {{- include "ragflow.labels" . | nindent 4 }}
+    app.kubernetes.io/component: {{ $component }}
+spec:
+  replicas: {{ .Values.ragflow.api.replicaCount }}
+  {{- with .Values.ragflow.api.deployment.strategy }}
+  strategy:
+    {{- toYaml . | nindent 4 }}
+  {{- end }}
+  selector:
+    matchLabels:
+      {{- include "ragflow.selectorLabels" . | nindent 6 }}
+      app.kubernetes.io/component: {{ $component }}
+  template:
+    metadata:
+      labels:
+        {{- include "ragflow.selectorLabels" . | nindent 8 }}
+        app.kubernetes.io/component: {{ $component }}
+      {{- with .Values.ragflow.api.podAnnotations }}
+      annotations:
+        {{- toYaml . | nindent 8 }}
+      {{- end }}
+    spec:
+      {{- $globalPullSecrets := .Values.imagePullSecrets }}
+      {{- $basePullSecrets := .Values.ragflow.image.pullSecrets }}
+      {{- $apiImage := default (dict) .Values.ragflow.api.image }}
+      {{- $componentPullSecrets := default list $apiImage.pullSecrets }}
+      {{- if or (or $globalPullSecrets $basePullSecrets) $componentPullSecrets }}
+      imagePullSecrets:
+        {{- with $globalPullSecrets }}
+        {{- toYaml . | nindent 8 }}
+        {{- end }}
+        {{- with $basePullSecrets }}
+        {{- toYaml . | nindent 8 }}
+        {{- end }}
+        {{- with $componentPullSecrets }}
+        {{- toYaml . | nindent 8 }}
+        {{- end }}
+      {{- end }}
+      {{- $localServiceConf := .Values.ragflow.service_conf }}
+      {{- $llmFactories := .Values.ragflow.llm_factories }}
+      containers:
+        - name: {{ $component }}
+          workingDir: /ragflow
+          {{- $imageRepository := default .Values.ragflow.image.repository $apiImage.repository }}
+          {{- $imageTag := default .Values.ragflow.image.tag $apiImage.tag }}
+          image: {{ printf "%s:%s" $imageRepository $imageTag }}
+          {{- $pullPolicy := default .Values.ragflow.image.pullPolicy $apiImage.pullPolicy }}
+          {{- with $pullPolicy }}
+          imagePullPolicy: {{ . }}
+          {{- end }}
+          command:
+            - /bin/bash
+            - -lc
+            - |
+              set -eo pipefail
+              cd /ragflow
+
+              # MinerU installation logic
+              if [[ "${USE_MINERU}" == "true" ]]; then
+                export HUGGINGFACE_HUB_ENDPOINT="${HF_ENDPOINT:-https://hf-mirror.com}"
+                export PIP_INDEX_URL="${PIP_INDEX_URL:-https://pypi.org/simple}"
+                export PIP_EXTRA_INDEX_URL="${PIP_EXTRA_INDEX_URL:-https://pypi.org/simple}"
+          
+                default_prefix="/ragflow/uv_tools"
+                venv_dir="${default_prefix}/.venv"
+                exe="${MINERU_EXECUTABLE:-${venv_dir}/bin/mineru}"
+          
+                if [[ ! -x "${exe}" ]]; then
+                  echo "[mineru] installing with mirrors..."
+                  echo "[mineru] PyPI index: ${PIP_INDEX_URL}"
+                  echo "[mineru] PyPI extra index: ${PIP_EXTRA_INDEX_URL}"
+                  echo "[mineru] HF endpoint: ${HUGGINGFACE_HUB_ENDPOINT}"
+          
+                  mkdir -p "${default_prefix}"
+                  cd "${default_prefix}"
+                  uv venv "${venv_dir}"
+                  source "${venv_dir}/bin/activate"
+                  pkg="mineru[core]"
+                  {{- with .Values.ragflow.mineru.version }}
+                  pkg="${pkg}=={{ . }}"
+                  {{- end }}
+                  uv pip install -U "${pkg}" \
+                    --index-url "${PIP_INDEX_URL}" \
+                    --extra-index-url "${PIP_EXTRA_INDEX_URL}"
+                  deactivate
+          
+                  if ! "${exe}" --help >/dev/null 2>&1; then
+                    echo "[mineru] installation failed" >&2
+                    exit 1
+                  fi
+                  echo "[mineru] installed successfully: ${exe}"
+                else
+                  echo "[mineru] already installed: ${exe}"
+                fi
+                export MINERU_EXECUTABLE="${exe}"
+              fi
+
+              # Application startup logic
+              export LD_LIBRARY_PATH="/usr/lib/x86_64-linux-gnu/"
+              exec python3 api/ragflow_server.py{{- range $arg := .Values.ragflow.api.extraArgs }} {{ $arg | quote }}{{- end }}
+          ports:
+            - name: http
+              containerPort: 9380
+          {{- $probes := default (dict) .Values.ragflow.api.probes }}
+          {{- if $probes.liveness }}
+          livenessProbe:
+            {{- toYaml $probes.liveness | nindent 12 }}
+          {{- else }}
+          livenessProbe:
+            httpGet:
+              path: /v1/system/healthz
+              port: http
+            initialDelaySeconds: 30
+            periodSeconds: 10
+            timeoutSeconds: 5
+            failureThreshold: 3
+            successThreshold: 1
+          {{- end }}
+          {{- if $probes.readiness }}
+          readinessProbe:
+            {{- toYaml $probes.readiness | nindent 12 }}
+          {{- else }}
+          readinessProbe:
+            httpGet:
+              path: /v1/system/healthz
+              port: http
+            initialDelaySeconds: 10
+            periodSeconds: 5
+            timeoutSeconds: 3
+            failureThreshold: 3
+            successThreshold: 1
+          {{- end }}
+          {{- if $probes.startup }}
+          startupProbe:
+            {{- toYaml $probes.startup | nindent 12 }}
+          {{- else }}
+          startupProbe:
+            httpGet:
+              path: /v1/system/healthz
+              port: http
+            periodSeconds: 10
+            failureThreshold: 30
+          {{- end }}
+          envFrom:
+            - secretRef:
+                name: {{ include "ragflow.fullname" . }}-env-config
+          {{- if .Values.ragflow.mineru.enabled }}
+            - configMapRef:
+                name: {{ include "ragflow.fullname" . }}-mineru-env
+          {{- end }}
+          env:
+            - name: FLASK_ENV
+              value: {{ ternary "development" "production" (default false .Values.ragflow.api.debug) | quote }}
+            - name: FLASK_DEBUG
+              value: {{ ternary "1" "0" (default false .Values.ragflow.api.debug) | quote }}
+            {{- with .Values.ragflow.api.extraEnv }}
+            {{- toYaml . | nindent 12 }}
+            {{- end }}
+          volumeMounts:
+            - mountPath: /ragflow/conf/service_conf.yaml
+              subPath: service_conf.yaml
+              name: service-conf-volume
+            {{- if $localServiceConf }}
+            - mountPath: /ragflow/conf/local.service_conf.yaml
+              subPath: local.service_conf.yaml
+              name: service-conf-volume
+            {{- end }}
+            {{- if $llmFactories }}
+            - mountPath: /ragflow/conf/llm_factories.json
+              subPath: llm_factories.json
+              name: service-conf-volume
+            {{- end }}
+            {{- if and .Values.ragflow.mineru.enabled .Values.ragflow.mineru.persistence.enabled }}
+            {{- if .Values.ragflow.mineru.persistence.venv.enabled }}
+            - mountPath: /ragflow/uv_tools
+              name: mineru-venv
+              subPath: venv
+            {{- end }}
+            {{- if .Values.ragflow.mineru.persistence.cache.enabled }}
+            - mountPath: /root/.cache
+              name: mineru-cache
+              subPath: cache
+            {{- end }}
+            {{- end }}
+          {{- with .Values.ragflow.api.deployment.resources }}
+          resources:
+            {{- toYaml . | nindent 12 }}
+          {{- end }}
+      volumes:
+        - name: service-conf-volume
+          configMap:
+            name: ragflow-service-config
+        {{- if and .Values.ragflow.mineru.enabled .Values.ragflow.mineru.persistence.enabled }}
+        {{- if .Values.ragflow.mineru.persistence.venv.enabled }}
+        - name: mineru-venv
+          persistentVolumeClaim:
+            claimName: {{ include "ragflow.fullname" . }}-mineru-venv
+        {{- end }}
+        {{- if .Values.ragflow.mineru.persistence.cache.enabled }}
+        - name: mineru-cache
+          persistentVolumeClaim:
+            claimName: {{ include "ragflow.fullname" . }}-mineru-cache
+        {{- end }}
+        {{- end }}
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: {{ $name }}
+  labels:
+    {{- include "ragflow.labels" . | nindent 4 }}
+    app.kubernetes.io/component: {{ $component }}
+spec:
+  type: {{ .Values.ragflow.api.service.type }}
+  selector:
+    {{- include "ragflow.selectorLabels" . | nindent 4 }}
+    app.kubernetes.io/component: {{ $component }}
+  {{- if gt (int .Values.ragflow.api.replicaCount) 1 }}
+  sessionAffinity: ClientIP
+  {{- end }}
+  ports:
+    - name: http
+      port: {{ .Values.ragflow.api.service.port }}
+      targetPort: http

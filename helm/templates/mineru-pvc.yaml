@@ -1,0 +1,39 @@
+{{- if and .Values.ragflow.mineru.enabled .Values.ragflow.mineru.persistence.enabled }}
+{{- if .Values.ragflow.mineru.persistence.venv.enabled }}
+---
+apiVersion: v1
+kind: PersistentVolumeClaim
+metadata:
+  name: {{ include "ragflow.fullname" . }}-mineru-venv
+  labels:
+    {{- include "ragflow.labels" . | nindent 4 }}
+spec:
+  accessModes:
+    - ReadWriteOnce
+  resources:
+    requests:
+      storage: {{ .Values.ragflow.mineru.persistence.venv.size }}
+  {{- with .Values.ragflow.mineru.persistence.venv.storageClass }}
+  storageClassName: {{ . }}
+  {{- end }}
+{{- end }}
+
+{{- if .Values.ragflow.mineru.persistence.cache.enabled }}
+---
+apiVersion: v1
+kind: PersistentVolumeClaim
+metadata:
+  name: {{ include "ragflow.fullname" . }}-mineru-cache
+  labels:
+    {{- include "ragflow.labels" . | nindent 4 }}
+spec:
+  accessModes:
+    - ReadWriteOnce
+  resources:
+    requests:
+      storage: {{ .Values.ragflow.mineru.persistence.cache.size }}
+  {{- with .Values.ragflow.mineru.persistence.cache.storageClass }}
+  storageClassName: {{ . }}
+  {{- end }}
+{{- end }}
+{{- end }}
