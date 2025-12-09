@@ -221,25 +221,61 @@ class MinerUParser(RAGFlowPdfParser):
             if bottom <= top:
                 bottom = top + 2
 
+            # Cumulative bottom includes spillover height for additional pages.
             for pn_local in local_indices[1:]:
                 bottom += self.page_images[pn_local - 1].size[1]
 
-            img0 = self.page_images[local_indices[0]]
-            x0, y0, x1, y1 = int(left), int(top), int(right), int(min(bottom, img0.size[1]))
-            crop0 = img0.crop((x0, y0, x1, y1))
-            imgs.append(crop0)
-            if 0 < ii < len(poss) - 1:
-                positions.append((pns[0], x0, x1, y0, y1))
+            left_base = left
+            right_base = right
 
-            bottom -= img0.size[1]
+            img0 = self.page_images[local_indices[0]]
+            page_width, page_height = img0.size
+
+            # Clamp the bbox to the page bounds to prevent Pillow from seeing inverted rectangles.
+            x0 = int(max(0, min(left_base, page_width - 1)))
+            x1 = int(max(x0 + 1, min(right_base, page_width)))
+            y0 = int(max(0, min(top, page_height - 1)))
+            y1 = int(max(y0 + 1, min(bottom, page_height)))
+
+            if x1 <= x0 or y1 <= y0:
+                self.logger.debug("[MinerU] Skip invalid crop region on page %s: (%s, %s, %s, %s)", pns[0], x0, y0, x1, y1)
+            else:
+                crop0 = img0.crop((x0, y0, x1, y1))
+                imgs.append(crop0)
+                if 0 < ii < len(poss) - 1:
+                    positions.append((pns[0], x0, x1, y0, y1))
+
+            # Remaining height that still needs to be carved out on following pages.
+            remaining_bottom = max(0.0, bottom - page_height)
+
             for pn_abs, pn_local in zip(pns[1:], local_indices[1:]):
                 page = self.page_images[pn_local]
-                x0, y0, x1, y1 = int(left), 0, int(right), int(min(bottom, page.size[1]))
-                cimgp = page.crop((x0, y0, x1, y1))
-                imgs.append(cimgp)
-                if 0 < ii < len(poss) - 1:
-                    positions.append((pn_abs, x0, x1, y0, y1))
-                bottom -= page.size[1]
+                page_width, page_height = page.size
+                # Re-apply clamping for the spillover slice on this page.
+                x0 = int(max(0, min(left_base, page_width - 1)))
+                x1 = int(max(x0 + 1, min(right_base, page_width)))
+                if remaining_bottom <= 0:
+                    break
+
+                y0 = 0
+                y1 = int(max(1, min(remaining_bottom, page_height)))
+
+                if x1 <= x0 or y1 <= y0:
+                    self.logger.debug(
+                        "[MinerU] Skip invalid spillover crop on page %s: (%s, %s, %s, %s)",
+                        pn_abs,
+                        x0,
+                        y0,
+                        x1,
+                        y1,
+                    )
+                else:
+                    cimgp = page.crop((x0, y0, x1, y1))
+                    imgs.append(cimgp)
+                    if 0 < ii < len(poss) - 1:
+                        positions.append((pn_abs, x0, x1, y0, y1))
+
+                remaining_bottom = max(0.0, remaining_bottom - page_height)
 
         if not imgs:
             if need_position:
